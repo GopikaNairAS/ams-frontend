@@ -1,105 +1,316 @@
 "use client";
-
-import React, { useState, useEffect, useMemo, useRef } from "react";
+ 
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import TinderCard from "react-tinder-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ArrowLeft, Check, X, RotateCcw, Save } from "lucide-react";
 import { getAttendanceSessionById, type AttendanceSession } from "@/lib/api/attendance-session";
 import { listUsers } from "@/lib/api/user";
-import { createBulkAttendanceRecords, listAttendanceRecords, updateAttendanceRecordById, type AttendanceStatus, type AttendanceRecord } from "@/lib/api/attendance-record";
+import { createBulkAttendanceRecords, type AttendanceStatus } from "@/lib/api/attendance-record";
 import type { User } from "@/lib/types/UserTypes";
 import { toast } from "sonner";
-import { motion, AnimatePresence } from "framer-motion";
-
+import { motion, AnimatePresence, useMotionValue, useTransform } from "framer-motion";
+import { useAttendance } from "@/app/context/AttendanceContext";
+ 
 export const dynamic = "force-dynamic";
 export const dynamicParams = true;
-
-// Define an interface directly from react-tinder-card API for the ref mapping
+ 
 interface TinderCardAPI {
   swipe(dir?: string): Promise<void>;
   restoreCard(): Promise<void>;
 }
-
+ 
+// Slower, smoother spring — premium feel
+const SMOOTH_SPRING = { type: "spring" as const, stiffness: 280, damping: 36, mass: 1 };
+ 
+const SWIPE_DISTANCE_THRESHOLD = 80;
+const SWIPE_VELOCITY_THRESHOLD = 300;
+ 
+// One gradient mesh per student — deterministic from name
+function getGradient(name: string) {
+  const gradients = [
+    "linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%)",
+    "linear-gradient(135deg, #0d1b2a 0%, #1b263b 40%, #415a77 100%)",
+    "linear-gradient(135deg, #1c1c1e 0%, #2c2c2e 40%, #3a3a3c 100%)",
+    "linear-gradient(135deg, #0a0908 0%, #22333b 40%, #4a5568 100%)",
+    "linear-gradient(135deg, #10002b 0%, #240046 40%, #3c096c 100%)",
+    "linear-gradient(135deg, #03071e 0%, #0d1b2a 40%, #1d3557 100%)",
+  ];
+  const idx = (name?.charCodeAt(0) || 0) % gradients.length;
+  return gradients[idx];
+}
+ 
+function getAccent(name: string) {
+  const accents = ["#6ee7b7", "#93c5fd", "#c4b5fd", "#fca5a5", "#fcd34d", "#86efac"];
+  const idx = (name?.charCodeAt(0) || 0) % accents.length;
+  return accents[idx];
+}
+ 
+function SwipeCard({
+  student,
+  isTop,
+  stackIndex,
+  cardRef,
+  onSwipe,
+  onCardLeftScreen,
+  onManualSwipe,
+}: {
+  student: User;
+  isTop: boolean;
+  stackIndex: number;
+  cardRef: React.RefObject<TinderCardAPI | null>;
+  onSwipe: (dir: string, studentId: string) => void;
+  onCardLeftScreen: (name: string) => void;
+  onManualSwipe: (dir: "left" | "right") => void;
+}) {
+  const x = useMotionValue(0);
+ 
+  const greenOpacity = useTransform(x, [0, 70], [0, 1]);
+  const redOpacity   = useTransform(x, [-70, 0], [1, 0]);
+  const rotate       = useTransform(x, [-220, 220], [-14, 14]);
+ 
+  // Next card slides in from the right — offset sideways, not downward
+  const behindX      = stackIndex === 1 ? 28 : 0;
+  const behindScale  = 1 - stackIndex * 0.05;
+ 
+  const gradient = getGradient(student.name);
+  const accent   = getAccent(student.name);
+ 
+  const initials = `${student.first_name?.charAt(0) ?? ""}${student.last_name?.charAt(0) ?? ""}`.toUpperCase();
+ 
+  const handleDragEnd = useCallback((_: any, info: { offset: { x: number }; velocity: { x: number } }) => {
+    const dist = info.offset.x;
+    const vel  = info.velocity.x;
+    if (dist > SWIPE_DISTANCE_THRESHOLD || vel > SWIPE_VELOCITY_THRESHOLD) {
+      onManualSwipe("right");
+    } else if (dist < -SWIPE_DISTANCE_THRESHOLD || vel < -SWIPE_VELOCITY_THRESHOLD) {
+      onManualSwipe("left");
+    } else {
+      x.set(0);
+    }
+  }, [onManualSwipe, x]);
+ 
+  return (
+    <TinderCard
+      ref={cardRef}
+      key={student._id}
+      className="absolute w-full h-full cursor-grab active:cursor-grabbing select-none"
+      onSwipe={(dir: string) => onSwipe(dir, student._id!)}
+      onCardLeftScreen={() => onCardLeftScreen(student.name)}
+      preventSwipe={["up", "down"]}
+      swipeRequirementType="position"
+      swipeThreshold={SWIPE_DISTANCE_THRESHOLD}
+    >
+      <motion.div
+        className="relative w-full h-full overflow-hidden"
+        style={{
+          x: isTop ? x : behindX,
+          rotate: isTop ? rotate : 0,
+          scale: isTop ? 1 : behindScale,
+          zIndex: 100 - stackIndex,
+          transformOrigin: "bottom center",
+          borderRadius: 28,
+          boxShadow: isTop
+            ? "0 24px 64px rgba(0,0,0,0.35), 0 4px 16px rgba(0,0,0,0.2)"
+            : "0 8px 24px rgba(0,0,0,0.18)",
+        }}
+        drag={isTop ? "x" : false}
+        dragConstraints={{ left: 0, right: 0 }}
+        dragElastic={0.1}
+        onDrag={(_: any, info: any) => x.set(info.offset.x)}
+        onDragEnd={handleDragEnd}
+        animate={{ x: isTop ? undefined : behindX, scale: isTop ? 1 : behindScale }}
+        transition={SMOOTH_SPRING}
+      >
+        {/* Deep gradient background */}
+        <div
+          className="absolute inset-0"
+          style={{ background: gradient, borderRadius: 28 }}
+        />
+ 
+        {/* Noise texture overlay for depth */}
+        <div
+          className="absolute inset-0 opacity-[0.04]"
+          style={{
+            borderRadius: 28,
+            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E")`,
+          }}
+        />
+ 
+        {/* Subtle radial glow from top */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            borderRadius: 28,
+            background: `radial-gradient(ellipse 80% 50% at 50% 0%, ${accent}18 0%, transparent 70%)`,
+          }}
+        />
+ 
+        {/* GREEN present overlay — frosted glass */}
+        <motion.div
+          className="absolute inset-0 flex items-start justify-end p-5 pointer-events-none"
+          style={{
+            opacity: greenOpacity,
+            background: "linear-gradient(135deg, rgba(16,185,129,0.92) 0%, rgba(5,150,105,0.96) 100%)",
+            borderRadius: 28,
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div
+            className="mt-6 px-4 py-2 rounded-xl"
+            style={{
+              border: "2px solid rgba(255,255,255,0.9)",
+              transform: "rotate(-8deg)",
+              color: "white",
+              fontWeight: 900,
+              fontSize: 20,
+              letterSpacing: "0.12em",
+              textShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            }}
+          >
+            PRESENT ✓
+          </div>
+        </motion.div>
+ 
+        {/* RED absent overlay — frosted glass */}
+        <motion.div
+          className="absolute inset-0 flex items-start justify-start p-5 pointer-events-none"
+          style={{
+            opacity: redOpacity,
+            background: "linear-gradient(135deg, rgba(239,68,68,0.92) 0%, rgba(185,28,28,0.96) 100%)",
+            borderRadius: 28,
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div
+            className="mt-6 px-4 py-2 rounded-xl"
+            style={{
+              border: "2px solid rgba(255,255,255,0.9)",
+              transform: "rotate(8deg)",
+              color: "white",
+              fontWeight: 900,
+              fontSize: 20,
+              letterSpacing: "0.12em",
+              textShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            }}
+          >
+            ABSENT ✗
+          </div>
+        </motion.div>
+ 
+        {/* Card content */}
+        <div className="relative flex flex-col w-full h-full px-7 pt-10 pb-7" style={{ color: "white" }}>
+ 
+          {/* Top row — swipe hints */}
+          {isTop && (
+            <div className="flex justify-between mb-6 opacity-40">
+              <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.12em", color: "#fca5a5" }}>← ABSENT</span>
+              <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.12em", color: "#86efac" }}>PRESENT →</span>
+            </div>
+          )}
+ 
+          {/* Giant initials — the premium centerpiece */}
+          <div className="flex-1 flex items-center justify-center">
+            <div className="relative flex items-center justify-center">
+              {/* Glow ring */}
+              <div
+                className="absolute"
+                style={{
+                  width: 140,
+                  height: 140,
+                  borderRadius: "50%",
+                  background: `radial-gradient(circle, ${accent}30 0%, transparent 70%)`,
+                  filter: "blur(16px)",
+                }}
+              />
+              {/* Initials circle */}
+              <div
+                style={{
+                  width: 120,
+                  height: 120,
+                  borderRadius: "50%",
+                  border: `1.5px solid ${accent}55`,
+                  background: `radial-gradient(circle at 35% 35%, ${accent}22, transparent 65%)`,
+                  backdropFilter: "blur(4px)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 42,
+                  fontWeight: 700,
+                  color: accent,
+                  letterSpacing: "-0.02em",
+                  textShadow: `0 0 32px ${accent}88`,
+                }}
+              >
+                {initials}
+              </div>
+            </div>
+          </div>
+ 
+          {/* Student info — bottom section */}
+          <div className="mt-6 space-y-1">
+            {/* Thin divider */}
+            <div style={{ height: 1, background: "rgba(255,255,255,0.1)", marginBottom: 16 }} />
+ 
+            <p style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em", color: "rgba(255,255,255,0.95)" }}>
+              {student.name}
+            </p>
+ 
+            <div className="flex items-center justify-between">
+              <p style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", fontWeight: 500, letterSpacing: "0.06em" }}>
+                {(student.profile as any)?.adm_number || "—"}
+              </p>
+              <p style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", fontWeight: 400 }}>
+                {(student.profile as any)?.department || ""}
+              </p>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </TinderCard>
+  );
+}
+ 
 export default function SwipeAttendancePage() {
   const params = useParams();
   const router = useRouter();
   const sessionId = params.id as string;
-
-  const [session, setSession] = useState<AttendanceSession | null>(null);
-  const [students, setStudents] = useState<User[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-
-  // Stack of records we have marked thus far
+ 
+  const { initSession, setStudentStatus, setMultiple } = useAttendance();
+ 
+  const [session, setSession]             = useState<AttendanceSession | null>(null);
+  const [students, setStudents]           = useState<User[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [submitting, setSubmitting]       = useState(false);
   const [markedRecords, setMarkedRecords] = useState<Array<{ studentId: string; status: AttendanceStatus }>>([]);
-  
-  // Track the current index for UI purposes 
-  const [currentIndex, setCurrentIndex] = useState<number>(0);
-  const [existingRecords, setExistingRecords] = useState<Map<string, AttendanceRecord>>(new Map());
-  const [lastSwipeDirection, setLastSwipeDirection] = useState<'left' | 'right' | null>(null);
-
+  const [currentIndex, setCurrentIndex]   = useState<number>(-1);
+  const [lastSwipeDir, setLastSwipeDir]   = useState<string | null>(null);
+  const [restoringCardId, setRestoringCardId] = useState<string | null>(null);
+ 
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
       try {
         const sessionData = await getAttendanceSessionById(sessionId);
         setSession(sessionData);
-
-        const sessionBatchId = typeof sessionData.batch === 'string' ? sessionData.batch : sessionData.batch?._id;
-        
+        const sessionBatchId = typeof sessionData.batch === "string" ? sessionData.batch : sessionData.batch?._id;
+ 
         let allStudents: User[] = [];
         let page = 1;
         let totalPages = 1;
         do {
-          const usersResponse = await listUsers({ role: 'student', batch: sessionBatchId, limit: 100, page });
+          const usersResponse = await listUsers({ role: "student", batch: sessionBatchId, limit: 100, page });
           allStudents = [...allStudents, ...usersResponse.users];
           totalPages = usersResponse.pagination?.totalPages || 1;
           page++;
         } while (page <= totalPages);
-        
-        // Sort students in ascending order by name, then reverse for correct card stack order
-        allStudents.sort((a, b) => {
-          const nameA = (a.name || '').toLowerCase();
-          const nameB = (b.name || '').toLowerCase();
-          return nameA.localeCompare(nameB);
-        });
-        allStudents.reverse();
-        
-        // Ensure standard uniform array order
+ 
         setStudents(allStudents);
         setCurrentIndex(allStudents.length - 1);
-
-        // Load existing attendance records for this session
-        try {
-          let allRecords: AttendanceRecord[] = [];
-          let recPage = 1;
-          let recTotalPages = 1;
-          do {
-            const response = await listAttendanceRecords({ session: sessionId, limit: 100, page: recPage });
-            allRecords = [...allRecords, ...response.records];
-            recTotalPages = response.pagination?.totalPages || 1;
-            recPage++;
-          } while (recPage <= recTotalPages);
-
-          const recordsMap = new Map<string, AttendanceRecord>();
-          const records: Array<{ studentId: string; status: AttendanceStatus }> = [];
-
-          allRecords.forEach((record) => {
-            recordsMap.set(record.student._id, record);
-            records.push({ studentId: record.student._id, status: record.status });
-          });
-
-          setExistingRecords(recordsMap);
-          setMarkedRecords(records);
-        } catch (error) {
-          console.warn("Failed to load existing attendance records:", error);
-          setExistingRecords(new Map());
-        }
+        initSession(sessionId);
       } catch (error) {
         console.error("Failed to load data:", error);
         toast.error("Failed to load session or students.");
@@ -107,164 +318,92 @@ export default function SwipeAttendancePage() {
         setLoading(false);
       }
     };
-
-    if (sessionId) {
-      loadData();
-    }
+    if (sessionId) loadData();
   }, [sessionId]);
-
-  // Generate refs for every single child (TinderCard) so we can manually trigger swipes
+ 
   const childRefs = useMemo(
-    () =>
-      Array(students.length)
-        .fill(0)
-        .map((i) => React.createRef<TinderCardAPI>()),
+    () => Array(students.length).fill(0).map(() => React.createRef<TinderCardAPI>()),
     [students.length]
   );
-
+ 
   const canGoBack = currentIndex < students.length - 1;
-  const canSwipe = currentIndex >= 0;
-
-  const swiped = (direction: string, studentId: string, index: number) => {
+  const canSwipe  = currentIndex >= 0;
+ 
+  const swiped = useCallback((direction: string, studentId: string, index: number) => {
     const status: AttendanceStatus = direction === "right" ? "present" : "absent";
-    
-    // Show visual feedback for swipe direction
-    setLastSwipeDirection(direction === "right" ? 'right' : 'left');
-    
-    // Auto-reset the visual feedback after 500ms
-    setTimeout(() => {
-      setLastSwipeDirection(null);
-    }, 500);
-    
-    setMarkedRecords((prev) => {
-      const existing = prev.filter((r) => r.studentId !== studentId);
+    setLastSwipeDir(direction);
+    setStudentStatus(studentId, status);
+    setMarkedRecords((prev: Array<{ studentId: string; status: AttendanceStatus }>) => {
+      const existing = prev.filter((r: { studentId: string; status: AttendanceStatus }) => r.studentId !== studentId);
       return [...existing, { studentId, status }];
     });
-    
     setCurrentIndex(index - 1);
-  };
-
-  const outOfFrame = (name: string, idx: number) => {
-    // Fired when the card leaves screen
-  };
-
+  }, [setStudentStatus]);
+ 
+  const outOfFrame = useCallback((_name: string, _idx: number) => {}, []);
+ 
   const swipe = async (dir: string) => {
     if (canSwipe && currentIndex < students.length) {
       await childRefs[currentIndex].current?.swipe(dir);
     }
   };
-
+ 
+  const handleManualSwipe = useCallback((dir: "left" | "right") => {
+    if (currentIndex >= 0 && currentIndex < students.length) {
+      childRefs[currentIndex].current?.swipe(dir);
+    }
+  }, [childRefs, currentIndex, students.length]);
+ 
   const goBack = async () => {
-    if (!canGoBack) {
-      console.warn('Cannot go back: canGoBack is false or no more cards');
-      return;
-    }
-    try {
-      const newIndex = currentIndex + 1;
-      console.log('Restoring card at index:', newIndex);
-      await childRefs[newIndex].current?.restoreCard();
-      setCurrentIndex(newIndex);
-      setLastSwipeDirection(null); // Reset visual feedback
-      
-      // Remove the most recently saved record to cleanly rewrite it on next swipe
-      setMarkedRecords((prev) => {
-        const newArray = [...prev];
-        newArray.pop();
-        return newArray;
-      });
-    } catch (error) {
-      console.error('Error in goBack:', error);
-    }
+    if (!canGoBack) return;
+    const newIndex = currentIndex + 1;
+    const restoredStudent = students[newIndex];
+    setRestoringCardId(restoredStudent._id!);
+    await childRefs[newIndex].current?.restoreCard();
+    setCurrentIndex(newIndex);
+    setMarkedRecords((prev: Array<{ studentId: string; status: AttendanceStatus }>) => {
+      const newArray = [...prev];
+      const removed = newArray.pop();
+      if (removed) setStudentStatus(removed.studentId, undefined as any);
+      return newArray;
+    });
+    setTimeout(() => setRestoringCardId(null), 700);
   };
-
+ 
   const handleSubmit = async () => {
-    console.log('Submit button clicked');
     setSubmitting(true);
     try {
-      if (!session || students.length === 0) throw new Error("No session or students found");
-
-      const createRecords: Array<{ student: string; status: AttendanceStatus }> = [];
-      const updateRecordsList: Array<{ recordId: string; status: AttendanceStatus }> = [];
-
-      // Process ALL students, not just marked ones - default to absent if not marked
-      students.forEach((student) => {
-        const markedRecord = markedRecords.find(r => r.studentId === student._id);
-        const status = markedRecord?.status ?? "absent";
-        
-        const existingRecord = existingRecords.get(student._id!);
-
-        if (existingRecord) {
-          updateRecordsList.push({ recordId: existingRecord._id, status });
-        } else {
-          createRecords.push({ student: student._id!, status });
-        }
+      if (!session) throw new Error("No session found");
+      await createBulkAttendanceRecords({
+        session: session._id,
+        records: markedRecords.map((r: { studentId: string; status: AttendanceStatus }) => ({ student: r.studentId, status: r.status })),
       });
-
-      console.log('Creating:', createRecords.length, 'records. Updating:', updateRecordsList.length, 'records');
-
-      let createdCount = 0;
-      let updatedCount = 0;
-      let errorCount = 0;
-
-      // Execute creates
-      if (createRecords.length > 0) {
-        try {
-          const result = await createBulkAttendanceRecords({
-            session: session._id,
-            records: createRecords,
-          });
-          createdCount = (result.created ?? []).length;
-          errorCount = (result.errors ?? []).length;
-        } catch (error) {
-          console.error("Failed to create attendance records:", error);
-          errorCount += createRecords.length;
-        }
-      }
-
-      // Execute updates in parallel
-      if (updateRecordsList.length > 0) {
-        const updatePromises = updateRecordsList.map(({ recordId, status }) =>
-          updateAttendanceRecordById(recordId, { status })
-        );
-        const results = await Promise.allSettled(updatePromises);
-        results.forEach((result) => {
-          if (result.status === 'fulfilled') {
-            updatedCount++;
-          } else {
-            console.error('Failed to update record:', result.reason);
-            errorCount++;
-          }
-        });
-      }
-
-      const totalSaved = createdCount + updatedCount;
-      console.log('Submission complete:', totalSaved, 'records saved');
-      if (errorCount > 0) {
-        toast.success(`Saved ${totalSaved} records (${createdCount} new, ${updatedCount} updated) with ${errorCount} errors`);
-      } else {
-        toast.success(`Attendance successfully marked! (${createdCount} new, ${updatedCount} updated)`);
-      }
+      setMultiple(markedRecords.map((r: { studentId: string; status: AttendanceStatus }) => ({ studentId: r.studentId, status: r.status })));
+      toast.success("Attendance successfully marked!");
       router.push(`/dashboard/attendance/session/${sessionId}`);
     } catch (error: any) {
-      console.error(error);
-      toast.error(error.message || "Failed to submit attendance. Please try again.");
+      toast.error(error.message || "Failed to submit attendance.");
     } finally {
       setSubmitting(false);
     }
   };
-
+ 
+  const presentCount = markedRecords.filter((r: { studentId: string; status: AttendanceStatus }) => r.status === "present").length;
+  const absentCount  = markedRecords.filter((r: { studentId: string; status: AttendanceStatus }) => r.status === "absent").length;
+  const remaining    = students.length - presentCount - absentCount;
+ 
   if (loading) {
     return (
-      <div className="min-h-screen p-4 md:p-8 flex items-center justify-center flex-col space-y-6">
-        <Skeleton className="h-10 w-48 mb-10" />
-        <Skeleton className="h-[400px] w-full max-w-sm rounded-[30px]" />
+      <div className="min-h-screen flex flex-col items-center justify-center gap-6 p-6">
+        <Skeleton className="h-10 w-52" />
+        <Skeleton className="h-[440px] w-full max-w-sm rounded-[28px]" />
       </div>
     );
   }
-
+ 
   if (!session || students.length === 0) {
     return (
-      <div className="min-h-screen p-4 md:p-8 flex flex-col items-center justify-center">
+      <div className="min-h-screen flex flex-col items-center justify-center p-6">
         <h2 className="text-xl font-bold mb-4">No Students Found</h2>
         <Button onClick={() => router.push(`/dashboard/attendance/session/${sessionId}`)}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Go Back
@@ -272,86 +411,74 @@ export default function SwipeAttendancePage() {
       </div>
     );
   }
-
+ 
   return (
-    <div className="min-h-screen p-4 md:p-8 flex flex-col pt-8 overflow-hidden">
+    <div className="min-h-screen flex flex-col pt-8 pb-6 px-4 md:px-8 select-none">
+ 
       {/* Header */}
-      <div className="flex items-center gap-4 mb-8">
+      <div className="flex items-center gap-3 mb-8">
         <Button variant="ghost" size="icon" onClick={() => router.push(`/dashboard/attendance/session/${sessionId}`)}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
-          <h1 className="text-2xl font-bold">Swipe Attendance</h1>
-          <p className="text-sm text-muted-foreground">{session.subject.name} - {session.batch?.name || "N/A"}</p>
+          <h1 className="text-xl font-semibold tracking-tight">Swipe Attendance</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {session.subject.name} · {session.batch?.name || "N/A"}
+          </p>
         </div>
       </div>
-
-      <div className="flex-1 flex flex-col items-center justify-center max-w-sm mx-auto w-full relative h-[500px] overflow-hidden">
-        {/* Empty State / Summary Screen when done */}
+ 
+      {/* Stat pills */}
+      <div className="flex justify-center gap-3 mb-8">
+        <div className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium"
+          style={{ background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.25)", color: "#10b981" }}>
+          <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          {presentCount} Present
+        </div>
+        <div className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium"
+          style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+          <div className="h-1.5 w-1.5 rounded-full bg-red-500" />
+          {absentCount} Absent
+        </div>
+        <div className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium text-muted-foreground"
+          style={{ background: "rgba(128,128,128,0.06)", border: "1px solid rgba(128,128,128,0.15)" }}>
+          {remaining} Left
+        </div>
+      </div>
+ 
+      {/* Card area */}
+      <div className="flex-1 flex flex-col items-center justify-center max-w-sm mx-auto w-full">
+ 
+        {/* Done state */}
         <AnimatePresence>
           {currentIndex === -1 && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="absolute inset-0 flex flex-col items-center justify-center z-50 pointer-events-auto p-4"
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={SMOOTH_SPRING}
+              className="w-full"
             >
-              <Card className="w-full max-w-sm text-center shadow-lg border-2 pointer-events-auto bg-card/95 backdrop-blur-sm">
+              <Card className="w-full text-center shadow-2xl border">
                 <CardHeader>
-                  <CardTitle>Session Complete!</CardTitle>
+                  <CardTitle className="text-2xl">All Done 🎉</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-6 pointer-events-auto">
-                  <div className="flex justify-around py-4 bg-muted/50 rounded-lg">
-                    <div className="text-center">
-                      <p className="text-3xl font-bold text-green-500">
-                        {markedRecords.filter((r) => r.status === "present").length}
-                      </p>
-                      <p className="text-sm text-muted-foreground">Present</p>
+                <CardContent className="space-y-6">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-2xl p-5" style={{ background: "rgba(16,185,129,0.07)", border: "1px solid rgba(16,185,129,0.2)" }}>
+                      <p className="text-4xl font-black" style={{ color: "#10b981" }}>{presentCount}</p>
+                      <p className="text-xs text-muted-foreground mt-1 font-medium">Present</p>
                     </div>
-                    <div className="text-center">
-                      <p className="text-3xl font-bold text-red-500">
-                        {markedRecords.filter((r) => r.status === "absent").length}
-                      </p>
-                      <p className="text-sm text-muted-foreground">Absent</p>
+                    <div className="rounded-2xl p-5" style={{ background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.2)" }}>
+                      <p className="text-4xl font-black text-red-500">{absentCount}</p>
+                      <p className="text-xs text-muted-foreground mt-1 font-medium">Absent</p>
                     </div>
                   </div>
-                  
-                  <div className="flex flex-col gap-3 w-full pointer-events-auto">
-                    <Button 
-                      className="w-full h-12 text-lg pointer-events-auto" 
-                      onClick={(e) => {
-                        console.log('Submit button clicked via onClick event');
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleSubmit();
-                      }}
-                      onMouseDown={(e) => {
-                        console.log('Submit button mouse down');
-                      }}
-                      disabled={submitting}
-                      type="button"
-                    >
-                      {submitting ? "Saving..." : (
-                        <>
-                          <Save className="mr-2 h-5 w-5" /> Submit Attendance
-                        </>
-                      )}
+                  <div className="flex flex-col gap-2.5">
+                    <Button className="w-full h-11" onClick={handleSubmit} disabled={submitting}>
+                      {submitting ? "Saving..." : <><Save className="mr-2 h-4 w-4" /> Submit Attendance</>}
                     </Button>
-                    <Button 
-                      variant="outline" 
-                      className="w-full pointer-events-auto h-10" 
-                      onClick={(e) => {
-                        console.log('Review button clicked via onClick event');
-                        e.preventDefault();
-                        e.stopPropagation();
-                        goBack();
-                      }}
-                      onMouseDown={(e) => {
-                        console.log('Review button mouse down');
-                      }}
-                      disabled={submitting}
-                      type="button"
-                    >
+                    <Button variant="outline" className="w-full h-11" onClick={goBack} disabled={submitting}>
                       <RotateCcw className="mr-2 h-4 w-4" /> Review Last Card
                     </Button>
                   </div>
@@ -360,136 +487,151 @@ export default function SwipeAttendancePage() {
             </motion.div>
           )}
         </AnimatePresence>
-
-        {/* Tinder Card Stack */}
-        <div className="relative w-full h-[400px] overflow-hidden">
-          {students.map((student, idx) => {
-            // Check if this is the current card being shown
-            const isCurrentCard = idx === currentIndex;
-            
-            return (
-            <TinderCard
-              ref={childRefs[idx]}
-              key={student._id || idx}
-              className="absolute w-full h-full shadow-xl rounded-[30px] cursor-grab active:cursor-grabbing bg-card border flex flex-col"
-              onSwipe={(dir) => swiped(dir, student._id!, idx)}
-              onCardLeftScreen={() => outOfFrame(student.name, idx)}
-              preventSwipe={["up", "down"]}
-            >
-              {/* Card Face Layout */}
-              <div className={`flex-1 flex flex-col relative w-full h-full bg-card overflow-hidden rounded-[30px] transition-colors duration-500 ${
-                isCurrentCard && lastSwipeDirection === 'right'
-                  ? 'bg-green-100 dark:bg-green-900/40'
-                  : isCurrentCard && lastSwipeDirection === 'left'
-                    ? 'bg-red-100 dark:bg-red-900/40'
-                    : ''
-              }`}>
-                
-                {(() => {
-                  const markedRecord = markedRecords.find(r => r.studentId === student._id);
-                  const bgColor = markedRecord?.status === 'present' 
-                    ? 'bg-green-50 dark:bg-green-900/20' 
-                    : markedRecord?.status === 'absent'
-                      ? 'bg-red-50 dark:bg-red-900/20'
-                      : 'bg-blue-50 dark:bg-blue-900/20';
-                  return (
-                    <div className={`h-1/2 ${bgColor} relative flex items-center justify-center border-b`}>
-                  <Avatar className="h-32 w-32 border-4 border-background shadow-md shadow-muted/50">
-                    <AvatarFallback className="text-4xl">
-                      {student.first_name?.charAt(0)}{student.last_name?.charAt(0) || ""}
-                    </AvatarFallback>
-                  </Avatar>
-
-                      {/* Built-in visual prompt for Swiping Hint */}
-                      {idx === students.length - 1 && (
-                        <>
-                          <div className="absolute top-4 left-4 border-2 border-red-500 text-red-500 font-bold px-3 py-1 rounded-md -rotate-12 opacity-60">NOPE</div>
-                          <div className="absolute top-4 right-4 border-2 border-green-500 text-green-500 font-bold px-3 py-1 rounded-md rotate-12 opacity-60">LIKE</div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                <div className="p-6 flex-1 flex flex-col justify-center items-center text-center">
-                  <h2 className="text-2xl font-bold mb-3">{student.name}</h2>
-                  {(() => {
-                    const markedRecord = markedRecords.find(r => r.studentId === student._id);
-                    const badgeBg = markedRecord?.status === 'present'
-                      ? 'bg-green-100 dark:bg-green-900/30 border-green-500'
-                      : markedRecord?.status === 'absent'
-                        ? 'bg-red-100 dark:bg-red-900/30 border-red-500'
-                        : 'bg-primary/10 border-primary';
-                    const badgeText = markedRecord?.status === 'present'
-                      ? 'text-green-700 dark:text-green-300'
-                      : markedRecord?.status === 'absent'
-                        ? 'text-red-700 dark:text-red-300'
-                        : 'text-primary';
-                    return (
-                      <div className={`w-12 h-12 rounded-full ${badgeBg} flex items-center justify-center border-2`}>
-                        <span className={`text-sm font-semibold ${badgeText}`}>
-                          {((student.profile as any)?.candidate_code || '').slice(-3).replace(/^0+/, '') || "N/A"}
+ 
+        {/* Card Stack */}
+        {currentIndex >= 0 && (
+          <div className="relative w-full" style={{ height: 440 }}>
+            {students.map((student, idx) => {
+              if (idx > currentIndex) return null;
+              const stackIndex = currentIndex - idx;
+              if (stackIndex > 1) return null;
+ 
+              const isTop = stackIndex === 0;
+              const isRestoring = student._id === restoringCardId;
+ 
+              return (
+                <AnimatePresence key={student._id}>
+                  {isRestoring ? (
+                    // Flip-back from the swipe direction — slides in sideways
+                    <motion.div
+                      className="absolute w-full overflow-hidden"
+                      style={{
+                        height: "100%",
+                        zIndex: 0,
+                        borderRadius: 28,
+                        boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                      }}
+                      initial={{
+                        x: lastSwipeDir === "right" ? 340 : -340,
+                        rotateY: lastSwipeDir === "right" ? 90 : -90,
+                        scale: 0.9,
+                        opacity: 0,
+                      }}
+                      animate={{ x: 28, rotateY: 0, scale: 0.95, opacity: 1 }}
+                      transition={SMOOTH_SPRING}
+                    >
+                      <div
+                        className="w-full h-full flex items-center justify-center"
+                        style={{
+                          background: getGradient(student.name),
+                          borderRadius: 28,
+                        }}
+                      >
+                        <span style={{ fontSize: 36, fontWeight: 700, color: getAccent(student.name), opacity: 0.6 }}>
+                          {`${student.first_name?.charAt(0) ?? ""}${student.last_name?.charAt(0) ?? ""}`.toUpperCase()}
                         </span>
                       </div>
-                    );
-                  })()}
-                  
-                  <div className="mt-8 text-sm text-muted-foreground">
-                    <p className="flex items-center gap-1">Swipe <strong className="text-green-500">Right</strong> for Present</p>
-                    <p className="flex items-center gap-1 mt-1">Swipe <strong className="text-red-500">Left</strong> for Absent</p>
-                  </div>
-                </div>
-              </div>
-            </TinderCard>
-            );
-          })}
-        </div>
-
-        {/* Manual Buttons */}
+                    </motion.div>
+                  ) : (
+                    // Next card slides in from the right
+                    <motion.div
+                      key={`wrapper-${student._id}`}
+                      className="absolute w-full"
+                      style={{ height: "100%" }}
+                      initial={stackIndex === 1 ? { opacity: 0, x: 60, scale: 0.9 } : false}
+                      animate={{ opacity: 1, x: 0, scale: 1 }}
+                      transition={SMOOTH_SPRING}
+                    >
+                      <SwipeCard
+                        student={student}
+                        isTop={isTop}
+                        stackIndex={stackIndex}
+                        cardRef={childRefs[idx]}
+                        onSwipe={(dir) => swiped(dir, student._id!, idx)}
+                        onCardLeftScreen={() => outOfFrame(student.name, idx)}
+                        onManualSwipe={handleManualSwipe}
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              );
+            })}
+          </div>
+        )}
+ 
+        {/* Action buttons */}
         {currentIndex >= 0 && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-center justify-center gap-6 mt-8 z-10 p-4 overflow-hidden"
+            transition={{ delay: 0.1, ...SMOOTH_SPRING }}
+            className="flex items-center justify-center gap-6 mt-8"
           >
-            <Button
+            {/* Absent */}
+            <motion.button
+              whileTap={{ scale: 0.86 }}
+              whileHover={{ scale: 1.07 }}
               onClick={() => swipe("left")}
-              size="icon"
-              className="h-16 w-16 rounded-full bg-red-100 dark:bg-red-950/50 hover:bg-red-200 dark:hover:bg-red-900/50 text-red-500 shadow-md transition-transform active:scale-95"
+              className="h-16 w-16 rounded-full flex items-center justify-center"
+              style={{
+                background: "rgba(239,68,68,0.08)",
+                border: "1.5px solid rgba(239,68,68,0.3)",
+                color: "#ef4444",
+                boxShadow: "0 4px 20px rgba(239,68,68,0.15)",
+              }}
             >
-              <X className="h-8 w-8" />
-            </Button>
-            
-            <Button
-              onClick={() => goBack()}
-              size="icon"
-              variant="outline"
+              <X className="h-7 w-7" />
+            </motion.button>
+ 
+            {/* Undo */}
+            <motion.button
+              whileTap={{ scale: 0.86 }}
+              whileHover={{ scale: 1.07 }}
+              onClick={goBack}
               disabled={!canGoBack}
-              className="h-12 w-12 rounded-full shadow-sm"
-              title="Undo Check"
+              className="h-11 w-11 rounded-full flex items-center justify-center disabled:opacity-25"
+              style={{
+                background: "rgba(128,128,128,0.07)",
+                border: "1px solid rgba(128,128,128,0.2)",
+                color: "var(--muted-foreground)",
+              }}
             >
-              <RotateCcw className="h-5 w-5" />
-            </Button>
-
-            <Button
+              <RotateCcw className="h-4 w-4" />
+            </motion.button>
+ 
+            {/* Present */}
+            <motion.button
+              whileTap={{ scale: 0.86 }}
+              whileHover={{ scale: 1.07 }}
               onClick={() => swipe("right")}
-              size="icon"
-              className="h-16 w-16 rounded-full bg-green-100 dark:bg-green-950/50 hover:bg-green-200 dark:hover:bg-green-900/50 text-green-500 shadow-md transition-transform active:scale-95"
+              className="h-16 w-16 rounded-full flex items-center justify-center"
+              style={{
+                background: "rgba(16,185,129,0.08)",
+                border: "1.5px solid rgba(16,185,129,0.3)",
+                color: "#10b981",
+                boxShadow: "0 4px 20px rgba(16,185,129,0.15)",
+              }}
             >
-              <Check className="h-8 w-8" />
-            </Button>
+              <Check className="h-7 w-7" />
+            </motion.button>
           </motion.div>
         )}
       </div>
-      
-      {/* Progress Footer */}
+ 
+      {/* Progress bar */}
       {currentIndex >= 0 && (
-        <div className="mt-8 text-center text-sm font-medium text-muted-foreground w-full max-w-sm mx-auto">
-          <p>{students.length - currentIndex} / {students.length} Students Checked</p>
-          <div className="w-full bg-muted h-2 rounded-full mt-2 overflow-hidden">
-            <div 
-              className="bg-primary h-full transition-all duration-300"
-              style={{ width: `${((students.length - 1 - currentIndex) / students.length) * 100}%` }}
+        <div className="mt-8 w-full max-w-sm mx-auto">
+          <div className="flex justify-between text-xs text-muted-foreground mb-2">
+            <span>{students.length - 1 - currentIndex} marked</span>
+            <span>{students.length} total</span>
+          </div>
+          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "rgba(128,128,128,0.12)" }}>
+            <motion.div
+              className="h-full rounded-full"
+              style={{ background: "linear-gradient(90deg, #10b981, #6ee7b7)" }}
+              initial={{ width: 0 }}
+              animate={{ width: `${((students.length - 1 - currentIndex) / students.length) * 100}%` }}
+              transition={SMOOTH_SPRING}
             />
           </div>
         </div>
@@ -497,3 +639,4 @@ export default function SwipeAttendancePage() {
     </div>
   );
 }
+ 
