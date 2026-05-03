@@ -1,5 +1,5 @@
 "use client";
-
+ 
 import Navbar from "@/components/appshell/navbar";
 import { useEffect, useMemo } from "react";
 import { BellRing, BookOpen, Home, Users, ClipboardCheck } from "lucide-react";
@@ -9,7 +9,8 @@ import { Avatar as AvatarIcon, AvatarFallback, AvatarImage } from "@/components/
 import { useAuth } from "@/lib/auth-context";
 import Loading from "@/app/loading";
 import Avatar, { genConfig } from 'react-nice-avatar';
-
+import { AttendanceProvider } from "@/app/context/AttendanceContext";
+ 
 export default function DashboardLayout({
   children,
 }: Readonly<{
@@ -17,7 +18,7 @@ export default function DashboardLayout({
 }>) {
   const router = useRouter();
   const { user, isLoading, session, incompleteProfile } = useAuth();
-
+ 
   const profileImageConfig: ReturnType<typeof genConfig> = useMemo(() => {
     const gender = user?.gender?.toLowerCase();
     const userGender: "man" | "woman" = gender == "male" || gender === "man" ? "man" : "woman";
@@ -27,34 +28,29 @@ export default function DashboardLayout({
       sex: userGender,
     };
   }, [user?.email, user?.gender]);
-
+ 
   const dockItems = useMemo(() => {
     const baseItems = [
       { icon: <Home size={18} />, label: 'Home', onClick: () => router.push('/dashboard') },
     ];
-
-    // Admin-specific items
+ 
     if (user?.role === 'admin' || user?.role === 'principal') {
       baseItems.push(
         { icon: <Users size={18} />, label: 'Users', onClick: () => router.push('/dashboard/users') },
         { icon: <BookOpen size={18} />, label: 'Academics', onClick: () => router.push('/dashboard/academics') },
       );
     }
-
-    // Teacher-specific items
+ 
     if (user?.role === 'teacher' || user?.role === 'hod') {
       baseItems.push( 
         { icon: <ClipboardCheck size={18} />, label: 'Attendance', onClick: () => router.push('/dashboard/attendance') }
       );
     }
-
-    // Common items for all roles
+ 
     baseItems.push(
       { icon: <BellRing size={18} />, label: 'Notifications', onClick: () => router.push('/dashboard/notifications') },
-      //{ icon: <Book size={18} />, label: 'Assignments', onClick: () => router.push('/dashboard/assignments') },
     );
-
-    // Profile item (always last)
+ 
     baseItems.push({
       icon: (
         user?.image != undefined && user?.image != "" && user?.image != "gen" ?
@@ -67,51 +63,42 @@ export default function DashboardLayout({
       label: 'Profile', 
       onClick: () => router.push('/dashboard/profile')
     });
-
+ 
     return baseItems;
   }, [router, user, profileImageConfig]);
-
+ 
   useEffect(() => {
-    // Still loading, don't do anything yet
     if (isLoading) return;
-
-    // Not authenticated
     if (!session || !user) {
       router.push('/signin');
       return;
     }
-
-    // User needs onboarding - redirect immediately
     if (incompleteProfile) {
       router.push('/onboarding');
       return;
     }
   }, [isLoading, session, user, incompleteProfile, router]);
-
-  if (isLoading) {
-    return <Loading />;
-  }
-
-  // If user data not ready or needs onboarding, show loader (don't render dashboard)
-  if (!user || incompleteProfile) {
-    return <Loading />;
-  }
-
+ 
+  if (isLoading) return <Loading />;
+  if (!user || incompleteProfile) return <Loading />;
+ 
   return (
-    <div className="flex h-screen w-full" suppressHydrationWarning>
-      <Dock 
-        items={dockItems}
-        panelHeight={68}
-        baseItemSize={50}
-        magnification={70}
-        className="mb-6"
-      />
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <Navbar />
-        <div className="flex-1 overflow-auto sm:pb-20">
-          {children}
-        </div>
-      </main>
-    </div>
+    <AttendanceProvider>
+      <div className="flex h-screen w-full" suppressHydrationWarning>
+        <Dock 
+          items={dockItems}
+          panelHeight={68}
+          baseItemSize={50}
+          magnification={70}
+          className="mb-6"
+        />
+        <main className="flex-1 flex flex-col overflow-hidden">
+          <Navbar />
+          <div className="flex-1 overflow-auto sm:pb-20">
+            {children}
+          </div>
+        </main>
+      </div>
+    </AttendanceProvider>
   );
 }

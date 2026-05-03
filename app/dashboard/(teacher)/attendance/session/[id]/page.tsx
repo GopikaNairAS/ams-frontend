@@ -1,8 +1,8 @@
 "use client";
-
-import { useState, useEffect } from "react";
+ 
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,34 +14,25 @@ import { listUsers } from "@/lib/api/user";
 import { listAttendanceRecords, createAttendanceRecord, updateAttendanceRecordById } from "@/lib/api/attendance-record";
 import type { User } from "@/lib/types/UserTypes";
 import type { AttendanceRecord } from "@/lib/api/attendance-record";
-import { getTeacherStudents } from "@/lib/dummy-data";
-
+ 
 export const dynamic = "force-dynamic";
 export const dynamicParams = true;
-
+ 
 export default function SessionAttendanceMethodsPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const sessionId = params.id as string;
-
-  const [session, setSession] = useState<AttendanceSession | null>(null);
-  const [students, setStudents] = useState<User[]>([]);
+ 
+  const [session, setSession]                 = useState<AttendanceSession | null>(null);
+  const [students, setStudents]               = useState<User[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<Map<string, AttendanceRecord>>(new Map());
-  const [loading, setLoading] = useState(true);
-  const [attendanceStatus, setAttendanceStatus] = useState<Map<string, 'present' | 'absent'>>(new Map());
+  const [loading, setLoading]                 = useState(true);
+  const [attendanceStatus, setAttendanceStatus] = useState<Map<string, "present" | "absent">>(new Map());
   const [savingStudentId, setSavingStudentId] = useState<string | null>(null);
-
-  const getDummyStatusMap = (studentIds?: Set<string>) => {
-    const statusMap = new Map<string, 'present' | 'absent'>();
-    getTeacherStudents().forEach((student) => {
-      if (!studentIds || studentIds.has(student.id)) {
-        statusMap.set(student.id, student.currentAttendance >= 75 ? 'present' : 'absent');
-      }
-    });
-    return statusMap;
-  };
-
-  const refreshAttendanceList = async () => {
+ 
+  // ── Fetch attendance records from the server and update local state ──
+  const fetchAttendanceRecords = useCallback(async (): Promise<void> => {
     try {
       let allRecords: AttendanceRecord[] = [];
       let page = 1;
@@ -52,108 +43,48 @@ export default function SessionAttendanceMethodsPage() {
         totalPages = response.pagination?.totalPages || 1;
         page++;
       } while (page <= totalPages);
+ 
       const recordsMap = new Map<string, AttendanceRecord>();
-      const statusMap = new Map<string, 'present' | 'absent'>();
-      
+      const statusMap  = new Map<string, "present" | "absent">();
+ 
       allRecords.forEach((record) => {
         recordsMap.set(record.student._id, record);
-        statusMap.set(record.student._id, record.status === 'present' ? 'present' : 'absent');
+        statusMap.set(record.student._id, record.status === "present" ? "present" : "absent");
       });
-      
+ 
       setAttendanceRecords(recordsMap);
-      setAttendanceStatus(statusMap);
+      setAttendanceStatus(statusMap);     // empty map = no records, never fall back to dummy data
     } catch (error) {
-      console.error("Failed to refresh attendance:", error);
-      const currentStudentIds = new Set(students.map((student) => student._id!));
-      setAttendanceStatus(getDummyStatusMap(currentStudentIds));
+      console.error("Failed to fetch attendance records:", error);
     }
-  };
-
-  const loadAttendanceRecords = async () => {
-    try {
-      let allRecords: AttendanceRecord[] = [];
-      let page = 1;
-      let totalPages = 1;
-      do {
-        const response = await listAttendanceRecords({ session: sessionId, limit: 100, page });
-        allRecords = [...allRecords, ...response.records];
-        totalPages = response.pagination?.totalPages || 1;
-        page++;
-      } while (page <= totalPages);
-      const recordsMap = new Map<string, AttendanceRecord>();
-      const statusMap = new Map<string, 'present' | 'absent'>();
-      
-      allRecords.forEach((record) => {
-        recordsMap.set(record.student._id, record);
-        statusMap.set(record.student._id, record.status === 'present' ? 'present' : 'absent');
-      });
-      
-      setAttendanceRecords(recordsMap);
-      setAttendanceStatus(statusMap);
-    } catch (error) {
-      console.error("Failed to load attendance records:", error);
-    }
-  };
-
+  }, [sessionId]);
+ 
+  // ── Initial load ──
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
       try {
-        // Fetch session
         const sessionData = await getAttendanceSessionById(sessionId);
         setSession(sessionData);
-        const sessionBatchId = typeof sessionData.batch === 'string' ? sessionData.batch : sessionData.batch?._id;
-
-        // Fetch students in batch
+        const sessionBatchId =
+          typeof sessionData.batch === "string" ? sessionData.batch : sessionData.batch?._id;
+ 
         let batchStudents: User[] = [];
         let page = 1;
         let totalPages = 1;
         do {
-          const usersResponse = await listUsers({ role: 'student', batch: sessionBatchId, limit: 100, page });
+          const usersResponse = await listUsers({ role: "student", batch: sessionBatchId, limit: 100, page });
           batchStudents = [...batchStudents, ...usersResponse.users];
           totalPages = usersResponse.pagination?.totalPages || 1;
           page++;
         } while (page <= totalPages);
-
-        // Sort students in ascending order by name
-        batchStudents.sort((a, b) => {
-          const nameA = (a.name || '').toLowerCase();
-          const nameB = (b.name || '').toLowerCase();
-          return nameA.localeCompare(nameB);
-        });
-
+ 
+        batchStudents.sort((a, b) =>
+          (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase())
+        );
         setStudents(batchStudents);
-
-        // Fetch attendance records for this session (fallback to dummy statuses)
-        try {
-          let allRecords: AttendanceRecord[] = [];
-          let recPage = 1;
-          let recTotalPages = 1;
-          do {
-            const recordsResponse = await listAttendanceRecords({ session: sessionId, limit: 100, page: recPage });
-            allRecords = [...allRecords, ...recordsResponse.records];
-            recTotalPages = recordsResponse.pagination?.totalPages || 1;
-            recPage++;
-          } while (recPage <= recTotalPages);
-          const recordsMap = new Map<string, AttendanceRecord>();
-          const statusMap = new Map<string, 'present' | 'absent'>();
-
-          allRecords.forEach((record) => {
-            recordsMap.set(record.student._id, record);
-            statusMap.set(record.student._id, record.status === 'present' ? 'present' : 'absent');
-          });
-
-          setAttendanceRecords(recordsMap);
-          if (statusMap.size > 0) {
-            setAttendanceStatus(statusMap);
-          } else {
-            setAttendanceStatus(getDummyStatusMap(new Set(batchStudents.map((s) => s._id!))));
-          }
-        } catch (recordError) {
-          console.warn("Using dummy attendance fallback:", recordError);
-          setAttendanceRecords(new Map());
-          setAttendanceStatus(getDummyStatusMap(new Set(batchStudents.map((s) => s._id!))));
-        }
+ 
+        await fetchAttendanceRecords();
       } catch (error) {
         console.error("Failed to load data:", error);
         setStudents([]);
@@ -162,69 +93,73 @@ export default function SessionAttendanceMethodsPage() {
         setLoading(false);
       }
     };
-
-    if (sessionId) {
-      loadData();
-    }
-  }, [sessionId]);
-
-  // Auto-refresh when window regains focus (debounced to avoid excessive requests)
+ 
+    if (sessionId) loadData();
+  }, [sessionId, fetchAttendanceRecords]);
+ 
+  // ── Re-fetch when tab regains focus (handles returning from swipe page) ──
   useEffect(() => {
     let debounceTimeout: NodeJS.Timeout;
+ 
     const handleFocus = () => {
       clearTimeout(debounceTimeout);
+      // Shorter debounce — 200ms is enough to avoid double-fires without missing data
       debounceTimeout = setTimeout(() => {
-        refreshAttendanceList();
-      }, 500);
+        fetchAttendanceRecords();
+      }, 200);
     };
-
-    window.addEventListener('focus', handleFocus);
+ 
+    window.addEventListener("focus", handleFocus);
     return () => {
-      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener("focus", handleFocus);
       clearTimeout(debounceTimeout);
     };
-  }, [refreshAttendanceList]);
+  }, [fetchAttendanceRecords]);
 
+  useEffect(() => {
+    if (searchParams.get("refresh") === "1") {
+      fetchAttendanceRecords();
+    }
+  }, [searchParams, fetchAttendanceRecords]);
+ 
+  // ── Toggle a single student's attendance inline ──
   const toggleAttendance = async (studentId: string) => {
     setSavingStudentId(studentId);
     try {
-      const currentStatus = attendanceStatus.get(studentId) || 'absent';
-      const newStatus = currentStatus === 'present' ? 'absent' : 'present';
-      
+      const currentStatus = attendanceStatus.get(studentId);
+      // If no record yet, treat as absent so first toggle makes them present
+      const newStatus = currentStatus === "present" ? "absent" : "present";
+ 
       const existingRecord = attendanceRecords.get(studentId);
-      
+ 
       if (existingRecord) {
-        // Update existing record
         await updateAttendanceRecordById(existingRecord._id, { status: newStatus });
       } else {
-        // Create new record
-        const student = students.find(s => s._id === studentId);
-        if (!student || !session) return;
-        
+        if (!session) return;
         await createAttendanceRecord({
           session: session._id,
           student: studentId,
           status: newStatus,
         });
       }
-      
-      // Update local state on success
+ 
+      // Optimistic local update
       setAttendanceStatus((prev) => {
-        const newMap = new Map(prev);
-        newMap.set(studentId, newStatus);
-        return newMap;
+        const next = new Map(prev);
+        next.set(studentId, newStatus);
+        return next;
       });
-      
-      // Reload records to get updated data
-      loadAttendanceRecords();
+ 
+      // Sync records map so future toggles know the record exists
+      await fetchAttendanceRecords();
     } catch (error) {
-      console.error('Failed to save attendance:', error);
-      alert('Failed to save attendance. Please try again.');
+      console.error("Failed to save attendance:", error);
+      alert("Failed to save attendance. Please try again.");
     } finally {
       setSavingStudentId(null);
     }
   };
-
+ 
   if (loading) {
     return (
       <div className="min-h-screen p-4 md:p-8 space-y-6">
@@ -234,7 +169,7 @@ export default function SessionAttendanceMethodsPage() {
       </div>
     );
   }
-
+ 
   if (!session) {
     return (
       <div className="min-h-screen p-4 md:p-8">
@@ -252,7 +187,7 @@ export default function SessionAttendanceMethodsPage() {
       </div>
     );
   }
-
+ 
   const getSessionTypeBadge = (type: string) => {
     const variants = {
       regular: "default",
@@ -261,7 +196,7 @@ export default function SessionAttendanceMethodsPage() {
     } as const;
     return variants[type as keyof typeof variants] || "default";
   };
-
+ 
   return (
     <div className="min-h-screen p-4 md:p-8 space-y-6">
       <div className="flex items-center gap-4">
@@ -273,7 +208,7 @@ export default function SessionAttendanceMethodsPage() {
           <p className="text-muted-foreground">Select how you want to mark attendance for this session</p>
         </div>
       </div>
-
+ 
       <Card>
         <CardHeader>
           <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
@@ -309,7 +244,8 @@ export default function SessionAttendanceMethodsPage() {
               <div>
                 <p className="text-sm font-medium">Time</p>
                 <p className="text-sm text-muted-foreground">
-                  {format(new Date(session.start_time), "hh:mm a")} - {format(new Date(session.end_time), "hh:mm a")}
+                  {format(new Date(session.start_time), "hh:mm a")} -{" "}
+                  {format(new Date(session.end_time), "hh:mm a")}
                 </p>
               </div>
             </div>
@@ -317,13 +253,15 @@ export default function SessionAttendanceMethodsPage() {
               <BookOpen className="h-5 w-5 text-primary shrink-0" />
               <div>
                 <p className="text-sm font-medium">Duration</p>
-                <p className="text-sm text-muted-foreground">{session.hours_taken} {session.hours_taken === 1 ? "hour" : "hours"}</p>
+                <p className="text-sm text-muted-foreground">
+                  {session.hours_taken} {session.hours_taken === 1 ? "hour" : "hours"}
+                </p>
               </div>
             </div>
           </div>
         </CardContent>
       </Card>
-
+ 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Link href={`/dashboard/attendance/session/${sessionId}/swipe`} className="block">
           <Card className="border-2 cursor-pointer hover:shadow-lg transition-shadow h-full">
@@ -335,7 +273,7 @@ export default function SessionAttendanceMethodsPage() {
             </CardHeader>
           </Card>
         </Link>
-
+ 
         <Link href={`/dashboard/attendance/session/${sessionId}/csv`} className="block">
           <Card className="border-2 cursor-pointer hover:shadow-lg transition-shadow h-full">
             <CardHeader>
@@ -347,7 +285,7 @@ export default function SessionAttendanceMethodsPage() {
           </Card>
         </Link>
       </div>
-
+ 
       {/* Student Attendance List */}
       <Card>
         <CardHeader>
@@ -356,31 +294,31 @@ export default function SessionAttendanceMethodsPage() {
               <Users className="h-5 w-5" />
               Student Attendance List
             </CardTitle>
-            <Button variant="outline" size="sm" onClick={refreshAttendanceList} className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchAttendanceRecords}
+              className="gap-2"
+            >
               <RefreshCw className="h-4 w-4" />
               Refresh
             </Button>
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? (
-            <div className="space-y-3">
-              <Skeleton className="h-12 w-full" />
-              <Skeleton className="h-12 w-full" />
-              <Skeleton className="h-12 w-full" />
-            </div>
-          ) : students.length === 0 ? (
+          {students.length === 0 ? (
             <p className="text-muted-foreground text-center py-8">No students found in this batch.</p>
           ) : (
             <div className="space-y-2 max-h-96 overflow-y-auto">
               {students.map((student) => {
-                const studentId = student._id;
-                const status = attendanceStatus.get(studentId!) || 'absent';
-                const isPresent = status === 'present';
+                const studentId  = student._id!;
+                const status     = attendanceStatus.get(studentId);
+                const isPresent  = status === "present";
+                const isUnmarked = status === undefined;
                 const p = (student.profile as any) ?? {};
-                const candidateCode = p.candidate_code?.trim() ?? '';
-                const lastThreeDigits = candidateCode.slice(-3).replace(/^0+/, '') || 'N/A';
-                
+                const candidateCode  = p.candidate_code?.trim() ?? "";
+                const lastThreeDigits = candidateCode.slice(-3).replace(/^0+/, "") || "N/A";
+ 
                 return (
                   <div
                     key={studentId}
@@ -392,10 +330,11 @@ export default function SessionAttendanceMethodsPage() {
                       </div>
                       <p className="font-medium text-sm">{student.name}</p>
                     </div>
+ 
                     <Button
-                      variant={isPresent ? "default" : "outline"}
+                      variant={isPresent ? "default" : isUnmarked ? "ghost" : "outline"}
                       size="sm"
-                      onClick={() => toggleAttendance(studentId!)}
+                      onClick={() => toggleAttendance(studentId)}
                       disabled={savingStudentId === studentId}
                       className="shrink-0 gap-1"
                     >
@@ -404,6 +343,8 @@ export default function SessionAttendanceMethodsPage() {
                           <span className="animate-spin inline-block">⟳</span>
                           Saving...
                         </>
+                      ) : isUnmarked ? (
+                        <>—  Not marked</>
                       ) : isPresent ? (
                         <>
                           <Check className="h-4 w-4" />
